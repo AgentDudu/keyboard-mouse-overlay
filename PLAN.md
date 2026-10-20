@@ -1,19 +1,21 @@
 # Keyboard & Mouse Overlay — Implementation Plan
 
-Status: **draft for discussion**. Section 9 lists the open decisions; the rest assumes the
-most common reading of "keyboard and mouse overlay" and marks every assumption.
+Status: **decisions locked** (2026-10-21) — see section 9. Rest of the document is the plan
+those decisions imply.
 
 ---
 
-## 1. What we are building (assumption — confirm)
+## 1. What we are building (decided)
 
 A desktop app that watches real keyboard + mouse input system-wide and paints it on a
 transparent, always-on-top, **click-through** overlay: keycaps for pressed keys, modifier
 state, mouse button + wheel indicators, with fade-out after release. Think Keyviz /
-Keycues / NohBoard. Nothing typed is written to disk.
+Keycues / NohBoard. Read-only: no suppression, no injection. Nothing typed is written to disk.
 
-Explicitly **not** assumed (confirm or drop): screen recording, key remapping/macro
-execution, input replay, OBS plugin.
+Decided out of scope: screen recording, key remapping / macro execution, input replay, OBS
+plugin, and the full-screen "ghost layer that follows the cursor" variant (a fixed keycap
+panel is the v1 shape — the ghost layer needs a full-screen layered surface and a heavier
+render path for no extra information).
 
 ## 2. Requirements draft
 
@@ -90,8 +92,13 @@ Rendering
 | `eframe`/`egui` | least UI code | Fastest settings UI, but transparency + passthrough are the exact two things it is weakest at. Use only if the settings UI gets big. |
 | `wgpu`/`pixels` | heaviest | Overkill for keycaps. |
 
-Recommended default: `windows`-crate hooks + `softbuffer`/`tiny-skia`/`ab_glyph` overlay, with
-a Phase 2 spike that proves transparency and passthrough before any keycap art exists.
+**Chosen:** `windows`-crate hooks + `softbuffer`/`tiny-skia`/`ab_glyph` overlay, with the
+Phase 2 spike proving transparency and passthrough before any keycap art exists.
+
+Capture seam (decided): one `Capture` trait — `start(sink)`, `stop()`, event type is our own
+normalised enum, never a Win32 struct. Windows-only implementation in v1; the trait exists so
+a Linux/macOS backend later cannot leak `KBDLLHOOKSTRUCT` into the renderer. No trait for the
+renderer — one paint path only.
 
 ## 5. Phases
 
@@ -113,7 +120,7 @@ Exit: `--dump` shows correct names/modifiers/wheel for a manual 2-minute torture
 (held key autorepeat, Ctrl+Shift combos, IME editor, game window); unit tests for the VK map
 and the press/release/autorepeat state machine.
 
-**Phase 2 — overlay window spike (1–2 days)** ← highest risk, do it early
+**Phase 2 — overlay window spike (1–2 days)** ← highest risk, do it early, before Phase 3 art
 Transparent topmost click-through window, hidden from taskbar/Alt-Tab, DPI-aware manifest,
 bounds follow a configurable anchor/monitor, quit hotkey + escape hatch, drag mode toggled by
 hotkey (because passthrough means no dragging by default).
@@ -171,17 +178,24 @@ source, per-app profiles.
 ## 8. Non-goals for v1
 
 macOS/Linux, remapping or macro execution, input injection/replay, cloud sync, plugin API,
-per-app profiles, theming engine beyond presets.
+per-app profiles, theming engine beyond presets, full-screen cursor-following ghost layer.
 
-## 9. Open decisions
+## 9. Decisions
 
-1. Purpose: keystroke display for demos/streaming (assumed) vs game/HUD visualiser vs
-   input recorder+replay vs macro companion.
-2. Platform: Windows-only now with a portable `windows`-crate core, or design the capture trait
-   for Linux/macOS up front.
-3. Render stack: `softbuffer`+`tiny-skia` (recommended), Direct2D/DComp, or `eframe`/`egui`.
-4. Overlay shape: fixed keycap panel (cheap, predictable) vs full-screen ghost layer that marks
-   the cursor position everywhere (needs a full-screen layered surface — heavier).
+Locked 2026-10-21:
+1. **Purpose** — keystroke/click display for demos and streaming. Read-only capture.
+2. **Platform** — Windows only, behind a `Capture` trait so other OSes stay possible.
+3. **Stack** — `windows`-crate low-level hooks; `softbuffer` + `tiny-skia` + `ab_glyph` painted
+   into a layered window. No egui, no wgpu, no `rdev`.
+4. **Shape** — fixed keycap panel with presets. Ghost-layer-following-cursor deferred.
+
+Still open, low stakes, answer when the relevant phase starts:
+- Elevation: show a "cannot see elevated apps" badge only, or offer an opt-in elevated
+  relaunch? (plan: badge in Phase 3, relaunch flag in Phase 5 if you want it)
+- Tray icon vs hotkey-only in v1. (plan: tray in Phase 4, hotkey-only until then)
+- Config location/format if `config.toml` in the platform config dir bothers you.
+- Font: bundled `ab_glyph`-compatible font, or system Segoe UI via direct write. (plan: bundle
+  one OFL/MIT font so behaviour is identical on every machine)
 
 ## 10. Branching & hygiene
 
