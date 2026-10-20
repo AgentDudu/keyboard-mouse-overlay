@@ -1,0 +1,11 @@
+/target
+dist/
+*.pdb
+*.log
+.env
+.env.*
+!*.env.example
+.idea/
+.vscode/
+*.tmp
+coverage/
