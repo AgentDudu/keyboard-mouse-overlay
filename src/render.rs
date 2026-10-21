@@ -8,64 +8,152 @@ use crate::overlay::{Frame, Rect, Rgba};
 use crate::scene::{Scene, Timing};
 use crate::text::Face;
 
-const INK: Rgba = Rgba {
-    r: 240,
-    g: 244,
-    b: 255,
-    a: 255,
-};
-const PANEL: Rgba = Rgba {
-    r: 16,
-    g: 18,
-    b: 26,
-    a: 96,
-};
-const CAP_IDLE: Rgba = Rgba {
-    r: 120,
-    g: 132,
-    b: 156,
-    a: 46,
-};
-const LABEL_IDLE: Rgba = Rgba {
-    r: 176,
-    g: 186,
-    b: 206,
-    a: 110,
-};
-const CAP_LIT: Rgba = Rgba {
-    r: 96,
-    g: 164,
-    b: 255,
-    a: 235,
-};
-const SHADOW: Rgba = Rgba {
-    r: 0,
-    g: 0,
-    b: 0,
-    a: 110,
-};
-const RIPPLE: Rgba = Rgba {
-    r: 255,
-    g: 214,
-    b: 120,
-    a: 220,
-};
-const MOUSE_LIT: Rgba = Rgba {
-    r: 255,
-    g: 150,
-    b: 96,
-    a: 240,
-};
-const MOUSE_IDLE: Rgba = Rgba {
-    r: 120,
-    g: 132,
-    b: 156,
-    a: 70,
-};
-
-/// Sizes in physical pixels. Everything derives from one scale, so a 150 % display is one number.
+/// A palette. Colours are data, not code paths, so a theme is one value to pick and one test to
+/// check: text must contrast with the cap it sits on.
 #[derive(Clone, Copy, Debug)]
-pub struct Layout {
+pub struct Theme {
+    pub name: &'static str,
+    pub ink: Rgba,
+    pub panel: Rgba,
+    pub cap_idle: Rgba,
+    pub label_idle: Rgba,
+    pub cap_lit: Rgba,
+    pub shadow: Rgba,
+    pub ripple: Rgba,
+    pub mouse_lit: Rgba,
+    pub mouse_idle: Rgba,
+}
+
+impl Theme {
+    pub const DARK: Theme = Theme {
+        name: "dark",
+        ink: Rgba {
+            r: 240,
+            g: 244,
+            b: 255,
+            a: 255,
+        },
+        panel: Rgba {
+            r: 16,
+            g: 18,
+            b: 26,
+            a: 96,
+        },
+        cap_idle: Rgba {
+            r: 120,
+            g: 132,
+            b: 156,
+            a: 46,
+        },
+        label_idle: Rgba {
+            r: 176,
+            g: 186,
+            b: 206,
+            a: 110,
+        },
+        cap_lit: Rgba {
+            r: 96,
+            g: 164,
+            b: 255,
+            a: 235,
+        },
+        shadow: Rgba {
+            r: 0,
+            g: 0,
+            b: 0,
+            a: 110,
+        },
+        ripple: Rgba {
+            r: 255,
+            g: 214,
+            b: 120,
+            a: 220,
+        },
+        mouse_lit: Rgba {
+            r: 255,
+            g: 150,
+            b: 96,
+            a: 240,
+        },
+        mouse_idle: Rgba {
+            r: 120,
+            g: 132,
+            b: 156,
+            a: 70,
+        },
+    };
+
+    /// For bright desks and screen-share backgrounds, where a dark strip disappears.
+    pub const LIGHT: Theme = Theme {
+        name: "light",
+        ink: Rgba {
+            r: 12,
+            g: 16,
+            b: 28,
+            a: 255,
+        },
+        panel: Rgba {
+            r: 246,
+            g: 248,
+            b: 252,
+            a: 208,
+        },
+        cap_idle: Rgba {
+            r: 96,
+            g: 112,
+            b: 140,
+            a: 40,
+        },
+        label_idle: Rgba {
+            r: 40,
+            g: 50,
+            b: 70,
+            a: 130,
+        },
+        cap_lit: Rgba {
+            r: 46,
+            g: 118,
+            b: 232,
+            a: 235,
+        },
+        shadow: Rgba {
+            r: 255,
+            g: 255,
+            b: 255,
+            a: 120,
+        },
+        ripple: Rgba {
+            r: 214,
+            g: 132,
+            b: 16,
+            a: 220,
+        },
+        mouse_lit: Rgba {
+            r: 224,
+            g: 106,
+            b: 34,
+            a: 240,
+        },
+        mouse_idle: Rgba {
+            r: 96,
+            g: 112,
+            b: 140,
+            a: 70,
+        },
+    };
+
+    pub const ALL: [&'static Theme; 2] = [&Self::DARK, &Self::LIGHT];
+
+    pub fn named(name: &str) -> Option<&'static Theme> {
+        Self::ALL.into_iter().find(|theme| theme.name == name)
+    }
+}
+
+/// Sizes in physical pixels plus the palette to draw with. Everything derives from one scale, so
+/// a 150 % display is one number.
+#[derive(Clone, Copy, Debug)]
+pub struct Layout<'theme> {
+    pub theme: &'theme Theme,
     pub pad: u32,
     pub gap: u32,
     pub cap_height: u32,
@@ -76,10 +164,11 @@ pub struct Layout {
     pub mouse_height: u32,
 }
 
-impl Layout {
-    pub fn new(scale: f32) -> Self {
+impl<'theme> Layout<'theme> {
+    pub fn themed(scale: f32, theme: &'theme Theme) -> Self {
         let unit = |value: f32| (value * scale).round().max(1.0) as u32;
         Self {
+            theme,
             pad: unit(14.0),
             gap: unit(8.0),
             cap_height: unit(46.0),
@@ -120,7 +209,7 @@ pub fn render_panel(
     frame: &mut Frame,
     scene: &Scene,
     face: &Face<'_>,
-    layout: &Layout,
+    layout: &Layout<'_>,
     time: f64,
     timing: &Timing,
 ) -> Option<Rect> {
@@ -165,12 +254,13 @@ pub fn render_panel(
         h: (layout.row_height() + layout.pad * 2).min(frame.h),
     };
 
-    frame.fill_round_rect(panel, layout.radius * 2, PANEL);
+    let t = layout.theme;
+    frame.fill_round_rect(panel, layout.radius * 2, t.panel);
 
     let cap_top = layout.pad + (layout.row_height() - layout.cap_height) / 2;
     for slot in &slots {
         let baseline = face.baseline_for(layout.font_px, cap_top, layout.cap_height, slot.label);
-        let box_colour = slot.alpha.map_or(CAP_IDLE, |alpha| dim(CAP_LIT, alpha));
+        let box_colour = slot.alpha.map_or(t.cap_idle, |alpha| dim(t.cap_lit, alpha));
         frame.fill_round_rect(
             Rect {
                 x: slot.x,
@@ -193,7 +283,7 @@ pub fn render_panel(
                     baseline + 2,
                     layout.font_px,
                     slot.label,
-                    dim(SHADOW, alpha),
+                    dim(t.shadow, alpha),
                 );
                 face.draw(
                     frame,
@@ -201,7 +291,7 @@ pub fn render_panel(
                     baseline,
                     layout.font_px,
                     slot.label,
-                    dim(INK, alpha),
+                    dim(t.ink, alpha),
                 );
             }
             None => {
@@ -211,7 +301,7 @@ pub fn render_panel(
                     baseline,
                     layout.font_px,
                     slot.label,
-                    LABEL_IDLE,
+                    t.label_idle,
                 );
             }
         }
@@ -223,21 +313,33 @@ pub fn render_panel(
 }
 
 /// Draw the click ripples onto a full-size canvas at their screen coordinates.
-pub fn draw_ripples(frame: &mut Frame, scene: &Scene, layout: &Layout, time: f64, timing: &Timing) {
+pub fn draw_ripples(
+    frame: &mut Frame,
+    scene: &Scene,
+    layout: &Layout<'_>,
+    time: f64,
+    timing: &Timing,
+) {
     let scale = layout.mouse_width as f32 / 38.0;
     for (cx, cy, alpha, radius) in scene.ripples(time, timing) {
-        frame.stroke_circle(cx, cy, radius * scale, 3.0, dim(RIPPLE, alpha));
+        frame.stroke_circle(cx, cy, radius * scale, 3.0, dim(layout.theme.ripple, alpha));
     }
 }
 
 /// Mouse silhouette whose buttons light up: left half, right half, wheel.
-fn draw_mouse(frame: &mut Frame, scene: &Scene, layout: &Layout, x: u32, y: u32) {
+fn draw_mouse(frame: &mut Frame, scene: &Scene, layout: &Layout<'_>, x: u32, y: u32) {
     let (w, h) = (layout.mouse_width, layout.mouse_height);
-    let state = |held: bool| if held { MOUSE_LIT } else { MOUSE_IDLE };
+    let state = |held: bool| {
+        if held {
+            layout.theme.mouse_lit
+        } else {
+            layout.theme.mouse_idle
+        }
+    };
     let half = w / 2;
     let top = h / 2;
 
-    frame.fill_round_rect(Rect { x, y, w, h }, layout.radius, MOUSE_IDLE);
+    frame.fill_round_rect(Rect { x, y, w, h }, layout.radius, layout.theme.mouse_idle);
     frame.fill_round_rect(
         Rect {
             x: x + 2,
@@ -275,6 +377,10 @@ mod tests {
     use super::*;
     use crate::input::{Action, Event, Modifiers};
     use crate::text::FONT_BYTES;
+
+    fn dark(scale: f32) -> Layout<'static> {
+        Layout::themed(scale, &Theme::DARK)
+    }
 
     fn face() -> Face<'static> {
         Face::new(FONT_BYTES).unwrap()
@@ -328,7 +434,7 @@ mod tests {
     #[test]
     fn empty_scene_draws_nothing() {
         let timing = Timing::default();
-        let layout = Layout::new(1.0);
+        let layout = dark(1.0);
         let mut frame = Frame::new(600, 120);
         assert!(render_panel(&mut frame, &Scene::new(), &face(), &layout, 0.0, &timing).is_none());
         assert_eq!(
@@ -341,7 +447,7 @@ mod tests {
     #[test]
     fn held_key_is_inked_inside_the_frame() {
         let timing = Timing::default();
-        let layout = Layout::new(1.0);
+        let layout = dark(1.0);
         let press = key(0x41, Action::Down, "A");
         let mut scene = Scene::new();
         let mods = Modifiers {
@@ -364,7 +470,7 @@ mod tests {
             fade: 0.1,
             ripple: 0.5,
         };
-        let layout = Layout::new(1.0);
+        let layout = dark(1.0);
         let press = key(0x41, Action::Down, "A");
         let release = key(0x41, Action::Up, "A");
         let down = click(MouseButton::Left, Action::Down);
@@ -385,7 +491,7 @@ mod tests {
     #[test]
     fn long_labels_and_tiny_frames_do_not_panic() {
         let timing = Timing::default();
-        let layout = Layout::new(1.0);
+        let layout = dark(1.0);
         let press = key(0x41, Action::Down, "PrintScreen");
         let scene = scene_from(&[(&press, 0.0)], &timing);
         let mut frame = Frame::new(24, 24);
@@ -394,9 +500,66 @@ mod tests {
     }
 
     #[test]
+    fn every_theme_contrasts_text_with_its_cap() {
+        let brightness = |c: Rgba| c.r as i32 * 3 + c.g as i32 * 5 + c.b as i32 * 2;
+        for theme in Theme::ALL {
+            let text = brightness(theme.ink);
+            let cap = brightness(theme.cap_lit);
+            let idle_text = brightness(theme.label_idle);
+            let idle_cap = brightness(theme.cap_idle);
+            assert!(
+                (text - cap).abs() > 300,
+                "{}: lit cap and text too close",
+                theme.name
+            );
+            assert!(
+                (idle_text - idle_cap).abs() > 120,
+                "{}: idle row unreadable",
+                theme.name
+            );
+        }
+        assert!(Theme::named("DARK").is_none(), "names are exact");
+        assert_eq!(Theme::named("light").unwrap().name, "light");
+    }
+
+    #[test]
+    fn rendering_at_150_percent_matches_the_metrics() {
+        let timing = Timing::default();
+        let press = key(0x41, Action::Down, "A");
+        let mut scene = Scene::new();
+        scene.apply(&press, Modifiers::default(), 0.0, &timing);
+        let mut small = Frame::new(1200, 200);
+        let mut large = Frame::new(1800, 300);
+        let one =
+            render_panel(&mut small, &scene, &face(), &dark(1.0), 0.0, &timing).expect("drawn");
+        let big = render_panel(
+            &mut large,
+            &scene,
+            &face(),
+            &Layout::themed(1.5, &Theme::DARK),
+            0.0,
+            &timing,
+        )
+        .expect("drawn");
+        assert!(
+            (big.h as f32 - one.h as f32 * 1.5).abs() <= 2.0,
+            "height {} vs {}",
+            big.h,
+            one.h
+        );
+        assert!(
+            (big.w as f32 - one.w as f32 * 1.5).abs() <= 10.0,
+            "width {} vs {}",
+            big.w,
+            one.w
+        );
+        assert!(inked(&large) > inked(&small), "1.5x paints more ink");
+    }
+
+    #[test]
     fn layout_scales_linearly() {
-        let small = Layout::new(1.0);
-        let large = Layout::new(1.5);
+        let small = dark(1.0);
+        let large = dark(1.5);
         assert_eq!(large.cap_height, (small.cap_height as f32 * 1.5) as u32);
         assert!((large.font_px - small.font_px * 1.5).abs() < 0.01);
     }
@@ -404,7 +567,7 @@ mod tests {
     #[test]
     fn mouse_buttons_light_individually() {
         let timing = Timing::default();
-        let layout = Layout::new(1.0);
+        let layout = dark(1.0);
         let down = click(MouseButton::Right, Action::Down);
         let scene = scene_from(&[(&down, 0.0)], &timing);
         let mut frame = Frame::new(400, 120);

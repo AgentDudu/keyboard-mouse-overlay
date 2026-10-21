@@ -182,8 +182,22 @@ caps x 507..1411 of 1920   -> left margin 507, right margin 508 (centred)
 glyph ink rows 973..987    -> centre 980 vs cap box centre 981
 ```
 
-Still open for phase 3: recorded GIF, 150 % DPI screenshot, themes beyond the one built-in
-palette, and the optional hold-to-confirm ring.
+Still open for phase 3: a screenshot on a display actually set to 150 % (the `--scale` flag
+proves the geometry, not the OS DPI path), corner/corner-preset anchoring (phase 4 config), and
+the optional hold-to-confirm ring, which belongs with the phase 5 macros it would serve.
+
+Added with the polish pass — palettes are data (`render::Theme`, `--theme dark|light`) and the
+size factor is a flag (`--scale`), plus `tools/capture-gif.ps1`, which drives harmless synthetic
+F-key input behind a plain backdrop and encodes the demos in the README (ffmpeg, 36 frames):
+
+```
+scale 1.0, caps band    -> y 34..79  = 46 px  = Layout::cap_height(1.0)
+scale 1.0, panel height -> y 14..99  = 86 px  = mouse_height(58) + 2 * pad(14)
+scale 1.5, caps band    -> y 17..85  = 69 px  = 46 * 1.5
+scale 1.5, strip centre -> 720 of 1440 (centred in the capture)
+before the first press  -> 0 pixels above the backdrop, so idle really hides
+theme test              -> every palette must keep text contrast against its own cap
+```
 
 **Phase 4 — config & ergonomics (1 day)**
 `config.toml` in the platform config dir (theme, scale, opacity, anchor, monitor, fade ms,

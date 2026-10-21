@@ -54,6 +54,26 @@ mod tests {
         );
         assert!(parse(&["--dump", "--nope"]).is_err());
     }
+
+    #[test]
+    fn theme_and_scale_are_validated() {
+        assert_eq!(
+            parse(&["--overlay", "--theme", "light"])
+                .unwrap()
+                .theme
+                .name,
+            "light"
+        );
+        assert_eq!(parse(&["--overlay"]).unwrap().theme.name, "dark");
+        assert_eq!(
+            parse(&["--overlay", "--scale", "1.5"]).unwrap().scale,
+            Some(1.5)
+        );
+        assert!(parse(&["--overlay", "--theme", "nonsense"]).is_err());
+        assert!(parse(&["--overlay", "--theme"]).is_err());
+        assert!(parse(&["--overlay", "--scale", "abc"]).is_err());
+        assert!(parse(&["--overlay", "--scale", "9"]).is_err());
+    }
 }
 
 const USAGE: &str = "\
@@ -64,6 +84,8 @@ kmoverlay — keyboard and mouse input overlay
   --overlay         show the transparent overlay window (Ctrl+Alt+Q quits)
   --show-injected   with --overlay, also show synthetic input (demo/screenshot aid)
   --moves           with --dump, also print mouse-move events (noisy)
+  --theme <name>    overlay palette: dark (default) or light
+  --scale <factor>  overlay size factor, overriding the display scale (capture aid)
   --duration <ms>   stop after this many milliseconds (default: run until killed)
   --help            show this help
 
@@ -76,6 +98,8 @@ struct Args {
     overlay: bool,
     show_injected: bool,
     moves: bool,
+    theme: &'static render::Theme,
+    scale: Option<f32>,
     duration: Option<Duration>,
     help: bool,
 }
@@ -88,6 +112,8 @@ impl Args {
             overlay: false,
             show_injected: false,
             moves: false,
+            theme: &render::Theme::DARK,
+            scale: None,
             duration: None,
             help: false,
         };
@@ -98,6 +124,21 @@ impl Args {
                 "--overlay" => args.overlay = true,
                 "--show-injected" => args.show_injected = true,
                 "--moves" => args.moves = true,
+                "--theme" => {
+                    let value = iter.next().ok_or("--theme needs a name (dark, light)")?;
+                    args.theme = render::Theme::named(&value)
+                        .ok_or_else(|| format!("--theme: unknown: {value} (dark, light)"))?;
+                }
+                "--scale" => {
+                    let value = iter.next().ok_or("--scale needs a number")?;
+                    let scale = value
+                        .parse::<f32>()
+                        .map_err(|_| format!("--scale: not a number: {value}"))?;
+                    if !(0.5..=4.0).contains(&scale) {
+                        return Err(format!("--scale: out of range 0.5..4.0: {value}"));
+                    }
+                    args.scale = Some(scale);
+                }
                 "--help" | "-h" => args.help = true,
                 "--duration" => {
                     let value = iter.next().ok_or("--duration needs a millisecond value")?;
@@ -315,8 +356,10 @@ fn overlay_mode(
 
     // Must happen before the first window exists, or the sizes below are guesses.
     let aware = overlay::make_dpi_aware();
-    let scale = overlay::system_scale();
-    let layout = Layout::new(scale);
+    // --scale overrides the display scale, so a 150 % layout can be captured without changing the
+    // user's display settings.
+    let scale = args.scale.unwrap_or_else(overlay::system_scale);
+    let layout = Layout::themed(scale, args.theme);
     let screen_w = Overlay::primary_width();
     let screen_h = Overlay::primary_height();
 
