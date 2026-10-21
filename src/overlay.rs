@@ -48,7 +48,7 @@ pub struct Rgba {
 ///
 /// Rounding is up by `+ 127` so 50% alpha over black keeps its last unit; truncating here is
 /// how translucent keycaps end up with visible dark edges.
-fn premultiply(c: Rgba) -> [u8; 4] {
+pub(crate) fn premultiply(c: Rgba) -> [u8; 4] {
     let a = c.a as u32;
     let mul = |v: u8| (((v as u32) * a + 127) / 255) as u8;
     [mul(c.b), mul(c.g), mul(c.r), c.a]
@@ -72,6 +72,96 @@ impl Frame {
     }
 
     /// Fully transparent — the part of the screen the user sees through.
+    /// Source-over composite of one straight-RGBA pixel. Out of range does nothing.
+    ///
+    /// Text and ripples are drawn this way because they land on top of the translucent panel;
+    /// `fill_rect` replaces, which would punch a hole in whatever is already there.
+    pub fn over(&mut self, x: i32, y: i32, colour: Rgba) {
+        if x < 0 || y < 0 || x >= self.w as i32 || y >= self.y_limit() as i32 {
+            return;
+        }
+        let i = (y as usize * self.w as usize + x as usize) * 4;
+        let src = premultiply(colour);
+        let src_a = src[3] as u32;
+        let inv = 255 - src_a;
+        for (channel, value) in src[..3].iter().enumerate() {
+            self.px[i + channel] = (*value as u32 + self.px[i + channel] as u32 * inv / 255) as u8;
+        }
+        self.px[i + 3] = (src_a + self.px[i + 3] as u32 * inv / 255) as u8;
+    }
+
+    /// Fill a rectangle with rounded corners — keycaps and the panel backplate.
+    pub fn fill_round_rect(&mut self, rect: Rect, radius: u32, colour: Rgba) {
+        let r = radius.min(rect.w / 2).min(rect.h / 2);
+        for row in 0..rect.h {
+            let edge = row.min(rect.h - 1 - row);
+            let inset = if edge >= r {
+                0
+            } else {
+                let d = (r - edge) as f32;
+                let rr = r as f32;
+                (rr - (rr * rr - d * d).sqrt().floor()) as u32
+            };
+            if inset * 2 >= rect.w {
+                continue;
+            }
+            self.fill_rect(
+                Rect {
+                    x: rect.x + inset,
+                    y: rect.y + row,
+                    w: rect.w - inset * 2,
+                    h: 1,
+                },
+                colour,
+            );
+        }
+    }
+
+    /// Circle outline — the click ripple.
+    pub fn stroke_circle(&mut self, cx: i32, cy: i32, radius: f32, thickness: f32, colour: Rgba) {
+        let outer = radius.ceil() as i32;
+        let inner = (radius - thickness).max(0.0);
+        for dy in -outer..=outer {
+            for dx in -outer..=outer {
+                let distance = ((dx * dx + dy * dy) as f32).sqrt();
+                if distance <= radius && distance >= inner {
+                    self.over(cx + dx, cy + dy, colour);
+                }
+            }
+        }
+    }
+
+    /// Copy `src` on top of this frame at `x`/`y`, clipped. Plain copy of already premultiplied
+    /// Copy `region` of `src` so its top-left lands at (`x`, `y`), clipped on both sides. Plain
+    /// copy of already-premultiplied pixels: the caller clears first, so there is nothing
+    /// underneath to blend with. Lets a wide canvas carry only the part with content, which is
+    /// how the strip gets centred on screen.
+    pub fn blit_region(&mut self, src: &Frame, x: i32, y: i32, region: Rect) {
+        let right = (region.x + region.w).min(src.w);
+        let bottom = (region.y + region.h).min(src.h);
+        for row in region.y..bottom {
+            let target_y = y + (row - region.y) as i32;
+            if target_y < 0 || target_y >= self.h as i32 {
+                continue;
+            }
+            let dest_of_left = x;
+            let dest_left = dest_of_left.max(0);
+            let dest_right = (x + (right - region.x) as i32).min(self.w as i32);
+            if dest_left >= dest_right {
+                continue;
+            }
+            let src_x = region.x + (dest_left - dest_of_left) as u32;
+            let from = (row as usize * src.w as usize + src_x as usize) * 4;
+            let bytes = (dest_right - dest_left) as usize * 4;
+            let to = (target_y as usize * self.w as usize + dest_left as usize) * 4;
+            self.px[to..to + bytes].copy_from_slice(&src.px[from..from + bytes]);
+        }
+    }
+
+    fn y_limit(&self) -> u32 {
+        self.h
+    }
+
     pub fn clear(&mut self) {
         self.px.iter_mut().for_each(|p| *p = 0);
     }
@@ -337,6 +427,238 @@ mod tests {
     }
 
     #[test]
+    fn blit_copies_and_clips() {
+        let mut frame = Frame::new(6, 4);
+        let mut patch = Frame::new(3, 3);
+        patch.fill_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 3,
+                h: 3,
+            },
+            Rgba {
+                r: 0,
+                g: 255,
+                b: 0,
+                a: 255,
+            },
+        );
+        frame.blit_region(
+            &patch,
+            4,
+            2,
+            Rect {
+                x: 0,
+                y: 0,
+                w: patch.w,
+                h: patch.h,
+            },
+        );
+        assert_eq!(
+            pixel(&frame, 5, 3),
+            [0, 255, 0, 255],
+            "bottom-right corner landed"
+        );
+        assert_eq!(
+            pixel(&frame, 3, 3),
+            [0, 0, 0, 0],
+            "left of the patch untouched"
+        );
+        frame.blit_region(
+            &patch,
+            -1,
+            -1,
+            Rect {
+                x: 0,
+                y: 0,
+                w: patch.w,
+                h: patch.h,
+            },
+        );
+        assert_eq!(
+            pixel(&frame, 1, 1),
+            [0, 255, 0, 255],
+            "negative origin clips"
+        );
+        frame.blit_region(
+            &patch,
+            100,
+            100,
+            Rect {
+                x: 0,
+                y: 0,
+                w: patch.w,
+                h: patch.h,
+            },
+        );
+        assert_eq!(
+            pixel(&frame, 5, 3),
+            [0, 255, 0, 255],
+            "fully outside is a no-op"
+        );
+    }
+
+    #[test]
+    fn over_blends_instead_of_replacing() {
+        let mut frame = Frame::new(2, 2);
+        frame.fill_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 1,
+                h: 1,
+            },
+            Rgba {
+                r: 0,
+                g: 0,
+                b: 255,
+                a: 255,
+            },
+        );
+        frame.over(
+            0,
+            0,
+            Rgba {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 128,
+            },
+        );
+        let blended = frame_px(&frame, 0, 0);
+        // BGRA order: the blue underneath survives and the white adds red.
+        assert!(
+            blended[3] == 255 && blended[0] == 255 && blended[2] >= 128,
+            "blended in place: {blended:?}"
+        );
+        frame.over(
+            1,
+            1,
+            Rgba {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 128,
+            },
+        );
+        assert_eq!(
+            frame_px(&frame, 1, 1),
+            [128, 128, 128, 128],
+            "over transparent is just the source"
+        );
+    }
+
+    #[test]
+    fn over_ignores_pixels_outside_the_frame() {
+        let mut frame = Frame::new(2, 2);
+        frame.over(
+            -1,
+            0,
+            Rgba {
+                r: 9,
+                g: 9,
+                b: 9,
+                a: 255,
+            },
+        );
+        frame.over(
+            0,
+            -3,
+            Rgba {
+                r: 9,
+                g: 9,
+                b: 9,
+                a: 255,
+            },
+        );
+        frame.over(
+            5,
+            5,
+            Rgba {
+                r: 9,
+                g: 9,
+                b: 9,
+                a: 255,
+            },
+        );
+        assert_eq!(frame_px(&frame, 0, 0), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rounded_corners_are_transparent_and_centre_is_not() {
+        let mut frame = Frame::new(20, 20);
+        frame.fill_round_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 20,
+                h: 20,
+            },
+            6,
+            Rgba {
+                r: 255,
+                g: 255,
+                b: 255,
+                a: 255,
+            },
+        );
+        assert_eq!(pixel(&frame, 0, 0), [0, 0, 0, 0], "corner cut out");
+        assert_eq!(pixel(&frame, 10, 10), [255, 255, 255, 255]);
+        assert_eq!(pixel(&frame, 19, 10), [255, 255, 255, 255], "mid edge kept");
+        frame.clear();
+        frame.fill_round_rect(
+            Rect {
+                x: 8,
+                y: 8,
+                w: 1,
+                h: 1,
+            },
+            4,
+            Rgba {
+                r: 1,
+                g: 1,
+                b: 1,
+                a: 255,
+            },
+        );
+        assert_eq!(
+            pixel(&frame, 8, 8),
+            [1, 1, 1, 255],
+            "radius larger than the box still paints it"
+        );
+    }
+
+    #[test]
+    fn circle_outline_hollows_the_middle() {
+        let mut frame = Frame::new(40, 40);
+        frame.stroke_circle(
+            20,
+            20,
+            10.0,
+            2.0,
+            Rgba {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+        );
+        assert_eq!(pixel(&frame, 20, 20), [0, 0, 0, 0], "hollow");
+        assert_eq!(pixel(&frame, 30, 20), [0, 0, 255, 255], "on the ring");
+        assert_eq!(pixel(&frame, 36, 20), [0, 0, 0, 0], "outside");
+        assert_eq!(
+            pixel(&frame, 20, 39),
+            [0, 0, 0, 0],
+            "outside vertically too"
+        );
+    }
+
+    fn frame_px(frame: &Frame, x: u32, y: u32) -> [u8; 4] {
+        pixel(frame, x, y)
+    }
+
+    #[test]
     fn premultiply_is_bgra_and_rounds_up() {
         assert_eq!(
             premultiply(Rgba {
@@ -389,6 +711,98 @@ mod tests {
         assert_eq!(pixel(&frame, 3, 1), [0, 0, 0, 0]);
         frame.clear();
         assert_eq!(pixel(&frame, 1, 1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn blit_region_copies_only_the_requested_part() {
+        let mut src = Frame::new(6, 2);
+        src.fill_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 2,
+            },
+            Rgba {
+                r: 0,
+                g: 0,
+                b: 255,
+                a: 255,
+            },
+        );
+        src.fill_rect(
+            Rect {
+                x: 2,
+                y: 0,
+                w: 3,
+                h: 2,
+            },
+            Rgba {
+                r: 9,
+                g: 8,
+                b: 7,
+                a: 255,
+            },
+        );
+        let mut dst = Frame::new(10, 3);
+        dst.blit_region(
+            &src,
+            5,
+            1,
+            Rect {
+                x: 2,
+                y: 0,
+                w: 3,
+                h: 2,
+            },
+        );
+        assert_eq!(
+            pixel(&dst, 5, 1),
+            [7, 8, 9, 255],
+            "region starts at the requested column"
+        );
+        assert_eq!(pixel(&dst, 7, 1), [7, 8, 9, 255]);
+        assert_eq!(pixel(&dst, 8, 1), [0, 0, 0, 0], "and stops with the region");
+        assert_eq!(
+            pixel(&dst, 0, 1),
+            [0, 0, 0, 0],
+            "rest of the canvas untouched"
+        );
+        let mut clip = Frame::new(4, 3);
+        clip.blit_region(
+            &src,
+            -2,
+            0,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 2,
+            },
+        );
+        assert_eq!(
+            pixel(&clip, 0, 0),
+            [7, 8, 9, 255],
+            "clipped on the left keeps the tail"
+        );
+        assert_eq!(pixel(&clip, 3, 0), [255, 0, 0, 255], "BGRA, blue");
+        let mut off = Frame::new(4, 4);
+        off.blit_region(
+            &src,
+            -6,
+            0,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 2,
+            },
+        );
+        assert_eq!(
+            pixel(&off, 0, 0),
+            [0, 0, 0, 0],
+            "fully off-canvas copy paints nothing"
+        );
     }
 
     #[test]

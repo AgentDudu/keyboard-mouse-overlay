@@ -152,7 +152,76 @@ CPU-buffer model with one less dependency, so the DirectComposition fallback sta
 Keycap widget (glyph + label + shadow), modifier row, mouse glyph with per-button state,
 click ripple, exponential fade, layout (bottom-centre and corner presets), font loading and
 fallback for the media/symbol keys.
-Exit: static-layout snapshot test plus a recorded GIF in the PR; idle CPU inside N1.
+Exit: layout tests plus a screenshot from a real desktop; idle CPU inside N1.
+
+**Status (phase 3 visuals, in progress — 2026-10-21):** `ab_glyph` + embedded IBM Plex Mono
+Bold (`assets/OFL.txt`, 134 KB). Pure modules: `scene.rs` (what is visible and at what alpha),
+`text.rs` (glyphs onto a CPU buffer), `render.rs` (layout: panel, caps, mouse indicator,
+ripple). `overlay.rs` gained `blit`, so only the strip and the rings are painted onto a
+full-screen canvas, and `main.rs` skips repainting while the scene is idle. `--show-injected`
+lets a scripted `SendInput` sequence drive the overlay for a capture. Measured on this desktop
+(1920x1080 @100 %, release):
+
+```
+idle 3.0 s, nothing pressed        -> 1 frame presented            (idle skip works)
+active run                         -> 167 frames, 4.86 ms draw+present per frame
+cargo test 45 passed               (15 scene, 9 render, 3 text)
+screenshot diff vs no-overlay shot -> panel x 0..932 y 938..1024, caps at x 14-100 /
+  109-210 / 219-289 (Ctrl Shift Alt lit), idle Win cap with legible glyph strokes, F13 lit,
+  A and F15 mid-fade, mouse indicator x 802-872, caps band y 952..1010
+                                       -> docs/phase3-panel.png
+```
+
+Layout anchor is bottom-centre: the strip is only as wide as its content and is blitted centred
+per frame, so the row slides sideways as caps come and go (keyviz behaviour; corner presets are a
+phase 4 setting). Labels are centred by measured ink, not font ascent — `Face::ink` reads outline
+bounds and `baseline_for` centres that box in the keycap.
+
+```
+caps x 507..1411 of 1920   -> left margin 507, right margin 508 (centred)
+glyph ink rows 973..987    -> centre 980 vs cap box centre 981
+```
+
+Added with the polish pass — palettes are data (`render::Theme`, `--theme dark|light`) and the
+size factor is a flag (`--scale`), plus `tools/capture-gif.ps1`, which drives harmless synthetic
+F-key input behind a plain backdrop and encodes the demos in the README (ffmpeg, 36 frames).
+
+**Palette (Catppuccin):** Mocha for dark, Latte for light. Modifiers and keycaps use separate
+accents, so a shortcut reads as one. `ink` opposes the cap colour and `shadow` opposes `ink`,
+which is what a light theme with dark text needs:
+
+| | dark (Mocha) | light (Latte) |
+| --- | --- | --- |
+| panel | `#1e1e2e` @ 58 % | `#eff1f5` @ 88 % |
+| cap idle / label | `#313244` / `#cdd6f4` | `#ccd0da` / `#4c4f69` |
+| keycap lit / text | `#89b4fa` / `#11111b` | `#1e66f5` / `#eff1f5` |
+| modifier lit / text | `#cba6f7` / `#11111b` | `#8839ef` / `#eff1f5` |
+| ripple / mouse | `#f9e2af` / `#fab387` | `#df8e1d` / `#fe640b` |
+
+Measured on lossless full-screen captures over a known backdrop (so the composite can be
+predicted, not just spotted), one row of `Ctrl Shift Alt` + idle `Win` + `F13 F15` + mouse:
+
+```
+backdrop (24,26,32), panel (30,30,46 @58%) -> observed (27,28,40), predicted (27,28,40)
+modifier chips  x 617..892   keycap chips x 980..1255   (two accents, two groups)
+panel           x 603..1315 y 938..1023 = 713x86 px, margins 603 / 604 -> centred
+cap band height y 958..1003 = 46 px = Layout::cap_height(1.0); at --scale 1.5 -> 69 px
+light theme     same geometry, panel composite (213,215,219)
+before the first press -> 0 pixels above the backdrop, so idle really hides
+```
+
+Two bugs this pass caught, both fixed at the source:
+
+- The first capture-measuring script read 32-bit BMP rows as 24-bit, which scrambles x. Every
+  number above is from the corrected reader; the earlier "centred in the capture" figure was
+  measured with the broken one and is superseded.
+- Holding Ctrl showed **two** chips — a modifier chip and a keycap `Ctrl`. `Scene` now ignores
+  modifier VK codes for the keycap row (`is_modifier_vk`), since the modifier row already shows
+  them. Panel width for that row dropped 1012 px -> 713 px.
+
+Still open for phase 3: a screenshot on a display actually set to 150 % (the `--scale` flag
+proves the geometry, not the OS DPI path), corner/corner-preset anchoring (phase 4 config), and
+the optional hold-to-confirm ring, which belongs with the phase 5 macros it would serve.
 
 **Phase 4 — config & ergonomics (1 day)**
 `config.toml` in the platform config dir (theme, scale, opacity, anchor, monitor, fade ms,
