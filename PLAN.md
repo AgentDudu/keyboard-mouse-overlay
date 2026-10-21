@@ -152,7 +152,28 @@ CPU-buffer model with one less dependency, so the DirectComposition fallback sta
 Keycap widget (glyph + label + shadow), modifier row, mouse glyph with per-button state,
 click ripple, exponential fade, layout (bottom-centre and corner presets), font loading and
 fallback for the media/symbol keys.
-Exit: static-layout snapshot test plus a recorded GIF in the PR; idle CPU inside N1.
+Exit: layout tests plus a screenshot from a real desktop; idle CPU inside N1.
+
+**Status (phase 3 visuals, in progress — 2026-10-21):** `ab_glyph` + embedded IBM Plex Mono
+Bold (`assets/OFL.txt`, 134 KB). Pure modules: `scene.rs` (what is visible and at what alpha),
+`text.rs` (glyphs onto a CPU buffer), `render.rs` (layout: panel, caps, mouse indicator,
+ripple). `overlay.rs` gained `blit`, so only the strip and the rings are painted onto a
+full-screen canvas, and `main.rs` skips repainting while the scene is idle. `--show-injected`
+lets a scripted `SendInput` sequence drive the overlay for a capture. Measured on this desktop
+(1920x1080 @100 %, release):
+
+```
+idle 3.0 s, nothing pressed        -> 1 frame presented            (idle skip works)
+active run                         -> 167 frames, 4.86 ms draw+present per frame
+cargo test 45 passed               (15 scene, 9 render, 3 text)
+screenshot diff vs no-overlay shot -> panel x 0..932 y 938..1024, caps at x 14-100 /
+  109-210 / 219-289 (Ctrl Shift Alt lit), idle Win cap with legible glyph strokes, F13 lit,
+  A and F15 mid-fade, mouse indicator x 802-872, caps band y 952..1010
+                                       -> docs/phase3-panel.png
+```
+
+Still open for phase 3: recorded GIF, 150 % DPI screenshot, themes beyond the one built-in
+palette, and the optional hold-to-confirm ring.
 
 **Phase 4 — config & ergonomics (1 day)**
 `config.toml` in the platform config dir (theme, scale, opacity, anchor, monitor, fade ms,

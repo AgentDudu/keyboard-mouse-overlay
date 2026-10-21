@@ -8,6 +8,11 @@ mod capture;
 mod input;
 #[cfg(windows)]
 mod overlay;
+#[cfg(windows)]
+mod render;
+mod scene;
+#[cfg(windows)]
+mod text;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -57,6 +62,7 @@ kmoverlay — keyboard and mouse input overlay
   --dump            print normalised input events to stdout
   --selftest        inject tagged synthetic keys and assert the hook path works
   --overlay         show the transparent overlay window (Ctrl+Alt+Q quits)
+  --show-injected   with --overlay, also show synthetic input (demo/screenshot aid)
   --moves           with --dump, also print mouse-move events (noisy)
   --duration <ms>   stop after this many milliseconds (default: run until killed)
   --help            show this help
@@ -68,6 +74,7 @@ struct Args {
     dump: bool,
     selftest: bool,
     overlay: bool,
+    show_injected: bool,
     moves: bool,
     duration: Option<Duration>,
     help: bool,
@@ -79,6 +86,7 @@ impl Args {
             dump: false,
             selftest: false,
             overlay: false,
+            show_injected: false,
             moves: false,
             duration: None,
             help: false,
@@ -88,6 +96,7 @@ impl Args {
                 "--dump" => args.dump = true,
                 "--selftest" => args.selftest = true,
                 "--overlay" => args.overlay = true,
+                "--show-injected" => args.show_injected = true,
                 "--moves" => args.moves = true,
                 "--help" | "-h" => args.help = true,
                 "--duration" => {
@@ -281,77 +290,9 @@ fn selftest(rx: std::sync::mpsc::Receiver<RawEvent>, capture: capture::Capture) 
     }
 }
 
-/// Draw the spike scene: a translucent panel, one keycap per held key, and a square whose
-/// alpha says whether clicks pass through. No text yet — fonts are phase 2's job.
-#[cfg(windows)]
-fn draw(frame: &mut overlay::Frame, input: &InputStream, click_through: bool) {
-    use overlay::{Rect, Rgba};
-
-    frame.clear();
-    let pad = 8;
-    frame.fill_rect(
-        overlay::Rect {
-            x: 0,
-            y: 0,
-            w: frame.w,
-            h: frame.h,
-        },
-        Rgba {
-            r: 18,
-            g: 20,
-            b: 28,
-            a: 70,
-        },
-    );
-    let cap = frame.h.saturating_sub(pad * 2);
-    for (index, _vk) in input.held_keys().iter().enumerate().take(8) {
-        let x = pad + index as u32 * (cap + 6);
-        if x + cap > frame.w {
-            break;
-        }
-        frame.fill_rect(
-            Rect {
-                x,
-                y: pad,
-                w: cap,
-                h: cap,
-            },
-            Rgba {
-                r: 96,
-                g: 164,
-                b: 255,
-                a: 230,
-            },
-        );
-    }
-    let marker = if click_through {
-        Rgba {
-            r: 64,
-            g: 220,
-            b: 128,
-            a: 110,
-        }
-    } else {
-        Rgba {
-            r: 240,
-            g: 72,
-            b: 72,
-            a: 255,
-        }
-    };
-    frame.fill_rect(
-        Rect {
-            x: frame.w - 24,
-            y: 4,
-            w: 20,
-            h: 20,
-        },
-        marker,
-    );
-}
-
-/// The spike: is a layered, topmost, click-through window that we repaint from a CPU buffer
-/// actually workable on Windows? Prints geometry and frame rate so the answer is measurable.
+/// The overlay: capture events drive a [`Scene`], the scene is rendered into a small panel
+/// canvas, and that is blitted onto a full-screen transparent frame so click ripples can appear
+/// wherever the click happened. Repainting is skipped while the scene is idle.
 #[cfg(windows)]
 fn overlay_mode(
     rx: std::sync::mpsc::Receiver<RawEvent>,
@@ -359,46 +300,68 @@ fn overlay_mode(
     args: &Args,
 ) -> ExitCode {
     use input::{Action, Event};
-    use overlay::Overlay;
+    use overlay::{Frame, Overlay};
+    use render::Layout;
+    use scene::Scene;
+    use text::Face;
+
+    let face = match Face::new(text::FONT_BYTES) {
+        Ok(loaded) => loaded,
+        Err(err) => {
+            eprintln!("overlay: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     // Must happen before the first window exists, or the sizes below are guesses.
     let aware = overlay::make_dpi_aware();
     let scale = overlay::system_scale();
+    let layout = Layout::new(scale);
     let screen_w = Overlay::primary_width();
     let screen_h = Overlay::primary_height();
 
-    let (logical_w, logical_h) = (480.0f32, 96.0);
-    let (w, h) = ((logical_w * scale) as i32, (logical_h * scale) as i32);
-    let x = ((screen_w - w) / 2).max(0);
-    let y = (screen_h - h - (60.0 * scale) as i32).max(0);
-
-    let mut window = match Overlay::create(x, y, w, h) {
+    let mut window = match Overlay::create(0, 0, screen_w, screen_h) {
         Ok(created) => created,
         Err(err) => {
             eprintln!("overlay: {err}");
             return ExitCode::FAILURE;
         }
     };
+
+    let panel_h = layout.row_height() + layout.pad * 2;
+    let anchor_x = 0i32;
+    let anchor_y = (screen_h - panel_h as i32 - (56.0 * scale) as i32).max(0);
+
+    let mut panel = Frame::new(screen_w as u32, panel_h);
+    let mut canvas = Frame::new(screen_w as u32, screen_h as u32);
     println!(
-        "overlay {w}x{h} at ({x},{y}) of {screen_w}x{screen_h} | scale {scale:.2} window {:.2} aware_set {aware}",
+        "overlay {screen_w}x{screen_h} canvas, panel {screen_w}x{panel_h} at y {anchor_y} | scale {scale:.2} window {:.2} aware_set {aware}",
         window.scale()
     );
-    println!("click-through is ON: clicks in that band should reach the window behind it.");
-    println!("hold keys to see keycaps. Ctrl+Alt+Q quits.");
+    println!("clicks pass through: hold keys, click anywhere for a ripple.");
+    println!("Ctrl+Alt+C toggles click-through, Ctrl+Alt+Q quits.");
 
+    let timing = scene::Timing::default();
     let deadline = args.duration.map(|elapsed| Instant::now() + elapsed);
-    let mut input = InputStream::new();
-    let mut frame = overlay::Frame::new(w as u32, h as u32);
     let started = Instant::now();
+    let mut stream = InputStream::new();
+    let mut scene = if args.show_injected {
+        Scene::showing_injected()
+    } else {
+        Scene::new()
+    };
     let mut frames = 0u64;
+    let mut busy = std::time::Duration::ZERO;
     let mut quit = false;
+    let mut visible = true;
 
     while !quit && window.pump() {
         while let Ok(raw) = rx.try_recv() {
-            // Reuse the normaliser: it already folds autorepeat into Repeat.
-            if let Some(event) = input.on_raw(raw) {
+            let time = started.elapsed().as_secs_f64();
+            if let Some(event) = stream.on_raw(raw) {
+                scene.apply(&event, stream.modifiers(), time, &timing);
                 let pressed = |vk: u32| matches!(event, Event::Key { vk: v, action: Action::Down, .. } if v == vk);
-                let held = input.modifiers();
+                let held = stream.modifiers();
                 if held.ctrl && held.alt {
                     if pressed(0x43) {
                         let on = !window.click_through();
@@ -409,23 +372,41 @@ fn overlay_mode(
                 }
             }
         }
-        draw(&mut frame, &input, window.click_through());
-        if let Err(err) = window.present(&frame) {
+
+        let now = started.elapsed().as_secs_f64();
+        let active = scene.active(now, &timing);
+        if !active && !visible {
+            std::thread::sleep(Duration::from_millis(8));
+            if deadline.is_some_and(|when| Instant::now() >= when) {
+                break;
+            }
+            continue;
+        }
+
+        let work = Instant::now();
+        render::render_panel(&mut panel, &scene, &face, &layout, now, &timing);
+        canvas.clear();
+        canvas.blit(&panel, anchor_x, anchor_y);
+        render::draw_ripples(&mut canvas, &scene, &layout, now, &timing);
+        if let Err(err) = window.present(&canvas) {
             eprintln!("overlay: present failed: {err}");
             return ExitCode::FAILURE;
         }
+        busy += work.elapsed();
         frames += 1;
+        visible = active;
+
         if quit || deadline.is_some_and(|when| Instant::now() >= when) {
             break;
         }
-        std::thread::sleep(Duration::from_millis(16));
+        std::thread::sleep(Duration::from_millis(if active { 6 } else { 40 }));
     }
 
     let elapsed = started.elapsed();
     println!(
-        "{frames} frames in {:.1}s = {:.1} fps",
+        "{frames} frames presented in {:.1}s, {:.2} ms of drawing+presenting per frame",
         elapsed.as_secs_f64(),
-        frames as f64 / elapsed.as_secs_f64().max(0.001)
+        busy.as_secs_f64() / frames.max(1) as f64 * 1000.0
     );
     if quit {
         println!("quit by Ctrl+Alt+Q");

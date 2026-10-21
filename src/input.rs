@@ -417,13 +417,6 @@ impl InputStream {
             win: down(0x5B) || down(0x5C),
         }
     }
-
-    /// Held non-modifier keys in vk order — what the overlay draws as keycaps.
-    pub fn held_keys(&self) -> Vec<u32> {
-        (0u32..0x100)
-            .filter(|vk| self.key_down[*vk as usize] && !is_modifier_vk(*vk))
-            .collect()
-    }
 }
 
 /// Double-click messages are treated as a press: Windows sends down/up/dblclk/up
@@ -455,11 +448,6 @@ fn mouse_button_event(msg: u32, raw: RawEvent) -> Option<(MouseButton, Action)> 
         _ => return None,
     };
     Some((button, action))
-}
-
-/// Keys shown as modifier glyphs rather than as their own keycap.
-const fn is_modifier_vk(vk: u32) -> bool {
-    matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0..=0xA5)
 }
 
 impl fmt::Display for Event {
@@ -730,22 +718,6 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(w.to_string(), "mouse wheel right 1 notch(es) @ 1,2");
-    }
-
-    #[test]
-    fn held_keys_are_non_modifiers_in_vk_order() {
-        let mut input = InputStream::new();
-        input.on_raw(key(WM_KEYDOWN, 0xA2));
-        input.on_raw(key(WM_KEYDOWN, 0x41));
-        input.on_raw(key(WM_KEYDOWN, 0x32));
-        assert_eq!(input.held_keys(), vec![0x32, 0x41]);
-        input.on_raw(key(WM_KEYUP, 0x41));
-        assert_eq!(input.held_keys(), vec![0x32]);
-        input.on_raw(key(WM_KEYUP, 0x32));
-        assert!(
-            input.held_keys().is_empty(),
-            "modifiers alone are not keycaps"
-        );
     }
 
     trait ActionOf {
