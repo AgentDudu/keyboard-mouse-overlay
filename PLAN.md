@@ -120,6 +120,16 @@ Exit: `--dump` shows correct names/modifiers/wheel for a manual 2-minute torture
 (held key autorepeat, Ctrl+Shift combos, IME editor, game window); unit tests for the VK map
 and the press/release/autorepeat state machine.
 
+Done, with three findings for later steps:
+- `MSLLHOOKSTRUCT` exposes no injected flag (only XBUTTON bits), so synthetic **mouse** input
+  is only distinguishable by a `dwExtraInfo` convention. Keyboard keeps `LLKHF_INJECTED`.
+- The hook callback holds a bounded `SyncSender` handle in a process-wide `OnceLock` and
+  `try_send`s: drop-newest on a stalled consumer, counter at `capture::DROPPED`. Upgrade to
+  drop-oldest only if that counter ever climbs.
+- `--selftest` (tagged + swallowed F13/F14 via `SendInput`) is the proof the hook path works,
+  because it needs a desktop session and cannot run in CI. It already caught one real bug:
+  the swallow branch returned before recording, so its own probe input vanished.
+
 **Phase 2 — overlay window spike (1–2 days)** ← highest risk, do it early, before Phase 3 art
 Transparent topmost click-through window, hidden from taskbar/Alt-Tab, DPI-aware manifest,
 bounds follow a configurable anchor/monitor, quit hotkey + escape hatch, drag mode toggled by
