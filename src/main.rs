@@ -6,6 +6,8 @@
 
 mod capture;
 mod input;
+#[cfg(windows)]
+mod overlay;
 
 use std::io::{self, Write};
 use std::process::ExitCode;
@@ -54,6 +56,7 @@ kmoverlay — keyboard and mouse input overlay
 
   --dump            print normalised input events to stdout
   --selftest        inject tagged synthetic keys and assert the hook path works
+  --overlay         show the transparent overlay window (Ctrl+Alt+Q quits)
   --moves           with --dump, also print mouse-move events (noisy)
   --duration <ms>   stop after this many milliseconds (default: run until killed)
   --help            show this help
@@ -64,6 +67,7 @@ Nothing captured here is written to disk.";
 struct Args {
     dump: bool,
     selftest: bool,
+    overlay: bool,
     moves: bool,
     duration: Option<Duration>,
     help: bool,
@@ -74,6 +78,7 @@ impl Args {
         let mut args = Args {
             dump: false,
             selftest: false,
+            overlay: false,
             moves: false,
             duration: None,
             help: false,
@@ -82,6 +87,7 @@ impl Args {
             match arg.as_str() {
                 "--dump" => args.dump = true,
                 "--selftest" => args.selftest = true,
+                "--overlay" => args.overlay = true,
                 "--moves" => args.moves = true,
                 "--help" | "-h" => args.help = true,
                 "--duration" => {
@@ -97,11 +103,15 @@ impl Args {
         if args.help {
             return Ok(args);
         }
-        if !(args.dump || args.selftest) {
-            return Err("pick a mode: --dump or --selftest".into());
+        if !(args.dump || args.selftest || args.overlay) {
+            return Err("pick a mode: --dump, --selftest or --overlay".into());
         }
-        if args.dump && args.selftest {
-            return Err("--dump and --selftest are mutually exclusive".into());
+        let modes = [args.dump, args.selftest, args.overlay]
+            .iter()
+            .filter(|on| **on)
+            .count();
+        if modes > 1 {
+            return Err("--dump, --selftest and --overlay are mutually exclusive".into());
         }
         Ok(args)
     }
@@ -130,6 +140,8 @@ fn main() -> ExitCode {
 
     if args.selftest {
         selftest(rx, capture)
+    } else if args.overlay {
+        overlay_mode(rx, capture, &args)
     } else {
         dump(rx, capture, &args)
     }
@@ -267,4 +279,166 @@ fn selftest(rx: std::sync::mpsc::Receiver<RawEvent>, capture: capture::Capture) 
         }
         ExitCode::FAILURE
     }
+}
+
+/// Draw the spike scene: a translucent panel, one keycap per held key, and a square whose
+/// alpha says whether clicks pass through. No text yet — fonts are phase 2's job.
+#[cfg(windows)]
+fn draw(frame: &mut overlay::Frame, input: &InputStream, click_through: bool) {
+    use overlay::{Rect, Rgba};
+
+    frame.clear();
+    let pad = 8;
+    frame.fill_rect(
+        overlay::Rect {
+            x: 0,
+            y: 0,
+            w: frame.w,
+            h: frame.h,
+        },
+        Rgba {
+            r: 18,
+            g: 20,
+            b: 28,
+            a: 70,
+        },
+    );
+    let cap = frame.h.saturating_sub(pad * 2);
+    for (index, _vk) in input.held_keys().iter().enumerate().take(8) {
+        let x = pad + index as u32 * (cap + 6);
+        if x + cap > frame.w {
+            break;
+        }
+        frame.fill_rect(
+            Rect {
+                x,
+                y: pad,
+                w: cap,
+                h: cap,
+            },
+            Rgba {
+                r: 96,
+                g: 164,
+                b: 255,
+                a: 230,
+            },
+        );
+    }
+    let marker = if click_through {
+        Rgba {
+            r: 64,
+            g: 220,
+            b: 128,
+            a: 110,
+        }
+    } else {
+        Rgba {
+            r: 240,
+            g: 72,
+            b: 72,
+            a: 255,
+        }
+    };
+    frame.fill_rect(
+        Rect {
+            x: frame.w - 24,
+            y: 4,
+            w: 20,
+            h: 20,
+        },
+        marker,
+    );
+}
+
+/// The spike: is a layered, topmost, click-through window that we repaint from a CPU buffer
+/// actually workable on Windows? Prints geometry and frame rate so the answer is measurable.
+#[cfg(windows)]
+fn overlay_mode(
+    rx: std::sync::mpsc::Receiver<RawEvent>,
+    _capture: capture::Capture,
+    args: &Args,
+) -> ExitCode {
+    use input::{Action, Event};
+    use overlay::Overlay;
+
+    // Must happen before the first window exists, or the sizes below are guesses.
+    let aware = overlay::make_dpi_aware();
+    let scale = overlay::system_scale();
+    let screen_w = Overlay::primary_width();
+    let screen_h = Overlay::primary_height();
+
+    let (logical_w, logical_h) = (480.0f32, 96.0);
+    let (w, h) = ((logical_w * scale) as i32, (logical_h * scale) as i32);
+    let x = ((screen_w - w) / 2).max(0);
+    let y = (screen_h - h - (60.0 * scale) as i32).max(0);
+
+    let mut window = match Overlay::create(x, y, w, h) {
+        Ok(created) => created,
+        Err(err) => {
+            eprintln!("overlay: {err}");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!(
+        "overlay {w}x{h} at ({x},{y}) of {screen_w}x{screen_h} | scale {scale:.2} window {:.2} aware_set {aware}",
+        window.scale()
+    );
+    println!("click-through is ON: clicks in that band should reach the window behind it.");
+    println!("hold keys to see keycaps. Ctrl+Alt+Q quits.");
+
+    let deadline = args.duration.map(|elapsed| Instant::now() + elapsed);
+    let mut input = InputStream::new();
+    let mut frame = overlay::Frame::new(w as u32, h as u32);
+    let started = Instant::now();
+    let mut frames = 0u64;
+    let mut quit = false;
+
+    while !quit && window.pump() {
+        while let Ok(raw) = rx.try_recv() {
+            // Reuse the normaliser: it already folds autorepeat into Repeat.
+            if let Some(event) = input.on_raw(raw) {
+                let pressed = |vk: u32| matches!(event, Event::Key { vk: v, action: Action::Down, .. } if v == vk);
+                let held = input.modifiers();
+                if held.ctrl && held.alt {
+                    if pressed(0x43) {
+                        let on = !window.click_through();
+                        window.set_click_through(on);
+                        println!("click-through {}", if on { "ON" } else { "OFF" });
+                    }
+                    quit = quit || pressed(0x51);
+                }
+            }
+        }
+        draw(&mut frame, &input, window.click_through());
+        if let Err(err) = window.present(&frame) {
+            eprintln!("overlay: present failed: {err}");
+            return ExitCode::FAILURE;
+        }
+        frames += 1;
+        if quit || deadline.is_some_and(|when| Instant::now() >= when) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(16));
+    }
+
+    let elapsed = started.elapsed();
+    println!(
+        "{frames} frames in {:.1}s = {:.1} fps",
+        elapsed.as_secs_f64(),
+        frames as f64 / elapsed.as_secs_f64().max(0.001)
+    );
+    if quit {
+        println!("quit by Ctrl+Alt+Q");
+    }
+    ExitCode::SUCCESS
+}
+
+#[cfg(not(windows))]
+fn overlay_mode(
+    _rx: std::sync::mpsc::Receiver<RawEvent>,
+    _capture: capture::Capture,
+    _args: &Args,
+) -> ExitCode {
+    eprintln!("overlay is Windows-only");
+    ExitCode::from(4)
 }
