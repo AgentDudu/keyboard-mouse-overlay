@@ -139,6 +139,15 @@ fullscreen-borderless game; no Alt-Tab flicker; `cargo run` on 100%/150% mixed D
 Kill criterion: if `softbuffer` + layered window cannot stay transparent here, switch this
 phase's render backend to DirectComposition instead of fighting it.
 
+Built on this branch (`src/overlay.rs`): raw `WS_EX_LAYERED | WS_EX_TRANSPARENT |
+WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST` painted with
+`UpdateLayeredWindow(ULW_ALPHA, AC_SRC_ALPHA)` from a `CreateDIBSection` backed by a
+premultiplied-BGRA `Frame`. `softbuffer` proved unnecessary — a DIB section is the same
+CPU-buffer model with one less dependency, so the DirectComposition fallback stays unspent.
+- 60.4 fps held for 6 s (363 frames) at 480×96 on 1920×1080 @100 %, `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` before the window exists; 304 KB exe; clean exit.
+- Ctrl+Alt+Q quits, Ctrl+Alt+C toggles passthrough (the future drag mode), `pump()` reports a dead window instead of spinning.
+- Still needs a human: paint over a video and a fullscreen-borderless game, 100 %/150 % mixed DPI, no Alt-Tab flicker. Run `cargo run -- --overlay`.
+
 **Phase 3 — visuals (1–2 days)**
 Keycap widget (glyph + label + shadow), modifier row, mouse glyph with per-button state,
 click ripple, exponential fade, layout (bottom-centre and corner presets), font loading and
