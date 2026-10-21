@@ -42,10 +42,11 @@ F13/F14 never reach whatever has focus.
 
 **Status:** phases 1-2 run on this machine (input capture, 60 Hz transparent click-through
 window), and phase 3 draws keycaps, fading history, modifier states, a mouse indicator and
-click ripples (IBM Plex Mono embedded, `ab_glyph` on the CPU), in two palettes:
+click ripples (IBM Plex Mono embedded, `ab_glyph` on the CPU). Palettes are Catppuccin — Mocha
+and Latte — and modifiers use a different accent from keycaps, so `Ctrl+C` reads as a shortcut
+before you read the labels.
 
-![phase 3 panel](docs/phase3-panel.png)
-
-| dark | light |
+| dark (`--theme dark`) | light (`--theme light`) |
 | --- | --- |
+| ![dark panel](docs/phase3-panel.png) | ![light panel](docs/phase3-panel-light.png) |
 | ![dark demo](docs/phase3-demo.gif) | ![light demo](docs/phase3-demo-light.gif) |

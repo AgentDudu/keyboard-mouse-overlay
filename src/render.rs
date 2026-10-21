@@ -9,7 +9,11 @@ use crate::scene::{Scene, Timing};
 use crate::text::Face;
 
 /// A palette. Colours are data, not code paths, so a theme is one value to pick and one test to
-/// check: text must contrast with the cap it sits on.
+/// check: text must contrast with the cap it sits on, and the two accents must be tellable apart.
+///
+/// `ink` is the text drawn *on a lit cap*, so it opposes the cap colour; `shadow` is the halo
+/// behind that text, so it opposes `ink` again (light theme: dark caps, light text, dark halo).
+/// The two dark palettes are Catppuccin Mocha, the light ones Catppuccin Latte.
 #[derive(Clone, Copy, Debug)]
 pub struct Theme {
     pub name: &'static str,
@@ -18,6 +22,7 @@ pub struct Theme {
     pub cap_idle: Rgba,
     pub label_idle: Rgba,
     pub cap_lit: Rgba,
+    pub mod_lit: Rgba,
     pub shadow: Rgba,
     pub ripple: Rgba,
     pub mouse_lit: Rgba,
@@ -28,58 +33,64 @@ impl Theme {
     pub const DARK: Theme = Theme {
         name: "dark",
         ink: Rgba {
-            r: 240,
-            g: 244,
-            b: 255,
+            r: 17,
+            g: 17,
+            b: 27,
             a: 255,
         },
         panel: Rgba {
-            r: 16,
-            g: 18,
-            b: 26,
-            a: 96,
+            r: 30,
+            g: 30,
+            b: 46,
+            a: 148,
         },
         cap_idle: Rgba {
-            r: 120,
-            g: 132,
-            b: 156,
-            a: 46,
+            r: 49,
+            g: 50,
+            b: 68,
+            a: 140,
         },
         label_idle: Rgba {
-            r: 176,
-            g: 186,
-            b: 206,
-            a: 110,
+            r: 205,
+            g: 214,
+            b: 244,
+            a: 184,
         },
         cap_lit: Rgba {
-            r: 96,
-            g: 164,
-            b: 255,
-            a: 235,
+            r: 137,
+            g: 180,
+            b: 250,
+            a: 245,
+        },
+        mod_lit: Rgba {
+            r: 203,
+            g: 166,
+            b: 247,
+            a: 245,
         },
         shadow: Rgba {
-            r: 0,
-            g: 0,
-            b: 0,
-            a: 110,
+            r: 245,
+            g: 245,
+            b: 247,
+            a: 90,
         },
         ripple: Rgba {
-            r: 255,
-            g: 214,
-            b: 120,
+            r: 249,
+            g: 226,
+            b: 175,
             a: 220,
         },
         mouse_lit: Rgba {
-            r: 255,
-            g: 150,
-            b: 96,
+            r: 250,
+            g: 179,
+            b: 135,
             a: 240,
         },
         mouse_idle: Rgba {
-            r: 120,
-            g: 132,
-            b: 156,
-            a: 70,
+            r: 69,
+            g: 71,
+            b: 90,
+            a: 217,
         },
     };
 
@@ -87,58 +98,64 @@ impl Theme {
     pub const LIGHT: Theme = Theme {
         name: "light",
         ink: Rgba {
-            r: 12,
-            g: 16,
-            b: 28,
+            r: 239,
+            g: 241,
+            b: 245,
             a: 255,
         },
         panel: Rgba {
-            r: 246,
-            g: 248,
-            b: 252,
-            a: 208,
+            r: 239,
+            g: 241,
+            b: 245,
+            a: 224,
         },
         cap_idle: Rgba {
-            r: 96,
-            g: 112,
-            b: 140,
-            a: 40,
+            r: 204,
+            g: 208,
+            b: 218,
+            a: 205,
         },
         label_idle: Rgba {
-            r: 40,
-            g: 50,
-            b: 70,
-            a: 130,
+            r: 76,
+            g: 79,
+            b: 105,
+            a: 199,
         },
         cap_lit: Rgba {
-            r: 46,
-            g: 118,
-            b: 232,
-            a: 235,
+            r: 30,
+            g: 102,
+            b: 245,
+            a: 245,
+        },
+        mod_lit: Rgba {
+            r: 136,
+            g: 57,
+            b: 239,
+            a: 245,
         },
         shadow: Rgba {
-            r: 255,
-            g: 255,
-            b: 255,
-            a: 120,
+            r: 4,
+            g: 4,
+            b: 5,
+            a: 77,
         },
         ripple: Rgba {
-            r: 214,
-            g: 132,
-            b: 16,
+            r: 223,
+            g: 142,
+            b: 29,
             a: 220,
         },
         mouse_lit: Rgba {
-            r: 224,
-            g: 106,
-            b: 34,
+            r: 254,
+            g: 100,
+            b: 11,
             a: 240,
         },
         mouse_idle: Rgba {
-            r: 96,
-            g: 112,
-            b: 140,
-            a: 70,
+            r: 156,
+            g: 160,
+            b: 176,
+            a: 217,
         },
     };
 
@@ -185,10 +202,15 @@ impl<'theme> Layout<'theme> {
     }
 }
 
+/// How many leading slots are the modifiers.
+const MOD_SLOTS: usize = 4;
+
 /// One keycap slot. `None` alpha means an idle modifier: outlined, labelled, never bright.
+/// `modifier` picks the second accent, so a shortcut reads as one at a glance.
 struct Slot<'a> {
     label: &'a str,
     alpha: Option<f32>,
+    modifier: bool,
     x: u32,
     width: u32,
 }
@@ -221,7 +243,9 @@ pub fn render_panel(
     let mods = scene.modifiers();
     let mut slots = Vec::new();
     let mut x = layout.pad;
-    for (label, alpha) in [
+    // The first MOD_SLOTS entries are the modifiers, so the accent choice cannot drift from the
+    // label text.
+    for (index, (label, alpha)) in [
         ("Ctrl", mods.ctrl.then_some(1.0)),
         ("Shift", mods.shift.then_some(1.0)),
         ("Alt", mods.alt.then_some(1.0)),
@@ -233,12 +257,15 @@ pub fn render_panel(
             .caps(time, timing)
             .into_iter()
             .map(|(label, alpha)| (label, Some(alpha))),
-    ) {
+    )
+    .enumerate()
+    {
         let text_width = face.width(label, layout.font_px).ceil() as u32;
         let width = (text_width + layout.inner_pad * 2).max(layout.cap_height);
         slots.push(Slot {
             label,
             alpha,
+            modifier: index < MOD_SLOTS,
             x,
             width,
         });
@@ -260,7 +287,10 @@ pub fn render_panel(
     let cap_top = layout.pad + (layout.row_height() - layout.cap_height) / 2;
     for slot in &slots {
         let baseline = face.baseline_for(layout.font_px, cap_top, layout.cap_height, slot.label);
-        let box_colour = slot.alpha.map_or(t.cap_idle, |alpha| dim(t.cap_lit, alpha));
+        let box_colour = slot.alpha.map_or(t.cap_idle, |alpha| {
+            let lit = if slot.modifier { t.mod_lit } else { t.cap_lit };
+            dim(lit, alpha)
+        });
         frame.fill_round_rect(
             Rect {
                 x: slot.x,
@@ -464,6 +494,52 @@ mod tests {
         assert!(panel.w < frame.w && panel.h <= frame.h, "fits: {panel:?}");
     }
 
+    /// Average x of every pixel painted in exactly this colour, and how many. The frame is
+    /// premultiplied, so compare against what a solid fill of `colour` leaves behind.
+    fn tint(frame: &Frame, colour: Rgba) -> (f64, usize) {
+        let want = crate::overlay::premultiply(colour);
+        let mut total = 0i64;
+        let mut count = 0usize;
+        for (index, px) in frame.px.as_chunks::<4>().0.iter().enumerate() {
+            if px[..3] == want[..3] && px[3] == want[3] {
+                total += (index % frame.w as usize) as i64;
+                count += 1;
+            }
+        }
+        (total as f64 / count.max(1) as f64, count)
+    }
+
+    #[test]
+    fn a_held_modifier_and_a_held_key_get_different_accents() {
+        let timing = Timing::default();
+        let layout = dark(1.0);
+        let press = key(0x41, Action::Down, "A");
+        let mut scene = Scene::new();
+        scene.apply(
+            &press,
+            Modifiers {
+                ctrl: true,
+                alt: false,
+                shift: false,
+                win: false,
+            },
+            0.0,
+            &timing,
+        );
+        let mut frame = Frame::new(900, 120);
+        render_panel(&mut frame, &scene, &face(), &layout, 0.0, &timing).expect("drawn");
+        let (ctrl_x, ctrl_pixels) = tint(&frame, Theme::DARK.mod_lit);
+        let (key_x, key_pixels) = tint(&frame, Theme::DARK.cap_lit);
+        assert!(
+            ctrl_pixels > 100 && key_pixels > 100,
+            "{ctrl_pixels} {key_pixels}"
+        );
+        assert!(
+            ctrl_x < key_x,
+            "modifiers are the left group: {ctrl_x} {key_x}"
+        );
+    }
+
     #[test]
     fn ripple_draws_at_the_click_position_after_the_key_faded() {
         let timing = Timing {
@@ -502,20 +578,40 @@ mod tests {
     #[test]
     fn every_theme_contrasts_text_with_its_cap() {
         let brightness = |c: Rgba| c.r as i32 * 3 + c.g as i32 * 5 + c.b as i32 * 2;
+        let farthest = |a: Rgba, b: Rgba| {
+            (a.r as i32 - b.r as i32)
+                .abs()
+                .max((a.g as i32 - b.g as i32).abs())
+                .max((a.b as i32 - b.b as i32).abs())
+        };
         for theme in Theme::ALL {
-            let text = brightness(theme.ink);
-            let cap = brightness(theme.cap_lit);
-            let idle_text = brightness(theme.label_idle);
-            let idle_cap = brightness(theme.cap_idle);
+            let name = theme.name;
             assert!(
-                (text - cap).abs() > 300,
-                "{}: lit cap and text too close",
-                theme.name
+                (brightness(theme.ink) - brightness(theme.cap_lit)).abs() > 300,
+                "{name}: lit cap and its text too close"
             );
             assert!(
-                (idle_text - idle_cap).abs() > 120,
-                "{}: idle row unreadable",
-                theme.name
+                (brightness(theme.ink) - brightness(theme.mod_lit)).abs() > 300,
+                "{name}: lit modifier and its text too close"
+            );
+            assert!(
+                (brightness(theme.label_idle) - brightness(theme.cap_idle)).abs() > 120,
+                "{name}: idle row unreadable"
+            );
+            // The point of two accents: a modifier has to look different from a key.
+            assert!(
+                farthest(theme.cap_lit, theme.mod_lit) > 50,
+                "{name}: the two accents are indistinguishable"
+            );
+            // The halo behind the text must oppose the text, or it blurs it.
+            assert!(
+                (brightness(theme.ink) - brightness(theme.shadow)).abs() > 400,
+                "{name}: text halo does not contrast with the text"
+            );
+            // Backplate opacity: below this the label competes with the desktop behind it.
+            assert!(
+                theme.panel.a >= 128,
+                "{name}: panel too translucent to read"
             );
         }
         assert!(Theme::named("DARK").is_none(), "names are exact");

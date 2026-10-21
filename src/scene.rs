@@ -35,6 +35,13 @@ fn decay(age: f64, fade: f64) -> f32 {
     (-3.0 * (age / fade).clamp(0.0, 1.0)).exp() as f32
 }
 
+/// Ctrl, Shift, Alt and Win already have their own chips in the modifier row. Without this the
+/// same key reads twice — once as a modifier chip, once as a keycap — which the two-accent
+/// palette makes obvious instead of merely redundant.
+fn is_modifier_vk(vk: u32) -> bool {
+    matches!(vk, 0x10 | 0x11 | 0x12 | 0x5B | 0x5C | 0xA0 | 0xA1 | 0xA2)
+}
+
 /// Unknown VK codes fall back to hex, matching `Event`'s display format.
 fn cap_label(label: Option<&'static str>, vk: u32) -> String {
     label
@@ -102,7 +109,10 @@ impl Scene {
                     return;
                 }
                 match action {
-                    Action::Down => self.press(*vk, cap_label(*label, *vk), time),
+                    Action::Down if !is_modifier_vk(*vk) => {
+                        self.press(*vk, cap_label(*label, *vk), time)
+                    }
+                    Action::Down => {}
                     Action::Up => self.release(*vk, time),
                     Action::Repeat => {}
                 }
@@ -250,6 +260,28 @@ mod tests {
 
     fn apply(scene: &mut Scene, event: &Event, time: f64, timing: &Timing) {
         scene.apply(event, Modifiers::default(), time, timing);
+    }
+
+    #[test]
+    fn a_held_modifier_is_not_also_a_keycap() {
+        let timing = Timing::default();
+        let mut scene = Scene::new();
+        let mods = Modifiers {
+            ctrl: true,
+            alt: false,
+            shift: false,
+            win: false,
+        };
+        scene.apply(&key(0x11, Action::Down, Some("Ctrl")), mods, 0.0, &timing);
+        assert!(scene.modifiers().ctrl, "the modifier row knows about it");
+        assert!(
+            scene.caps(0.0, &timing).is_empty(),
+            "the keycap row must not repeat it: {:?}",
+            scene.caps(0.0, &timing)
+        );
+        // A normal key alongside it is still a keycap.
+        scene.apply(&key(0x41, Action::Down, Some("A")), mods, 0.1, &timing);
+        assert_eq!(scene.caps(0.1, &timing).len(), 1);
     }
 
     #[test]

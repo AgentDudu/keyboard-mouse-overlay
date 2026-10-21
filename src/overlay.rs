@@ -48,7 +48,7 @@ pub struct Rgba {
 ///
 /// Rounding is up by `+ 127` so 50% alpha over black keeps its last unit; truncating here is
 /// how translucent keycaps end up with visible dark edges.
-fn premultiply(c: Rgba) -> [u8; 4] {
+pub(crate) fn premultiply(c: Rgba) -> [u8; 4] {
     let a = c.a as u32;
     let mul = |v: u8| (((v as u32) * a + 127) / 255) as u8;
     [mul(c.b), mul(c.g), mul(c.r), c.a]
