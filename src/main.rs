@@ -329,13 +329,12 @@ fn overlay_mode(
     };
 
     let panel_h = layout.row_height() + layout.pad * 2;
-    let anchor_x = 0i32;
     let anchor_y = (screen_h - panel_h as i32 - (56.0 * scale) as i32).max(0);
 
     let mut panel = Frame::new(screen_w as u32, panel_h);
     let mut canvas = Frame::new(screen_w as u32, screen_h as u32);
     println!(
-        "overlay {screen_w}x{screen_h} canvas, panel {screen_w}x{panel_h} at y {anchor_y} | scale {scale:.2} window {:.2} aware_set {aware}",
+        "overlay {screen_w}x{screen_h} canvas, strip {screen_w}x{panel_h} band at y {anchor_y} (centred per frame) | scale {scale:.2} window {:.2} aware_set {aware}",
         window.scale()
     );
     println!("clicks pass through: hold keys, click anywhere for a ripple.");
@@ -384,9 +383,14 @@ fn overlay_mode(
         }
 
         let work = Instant::now();
-        render::render_panel(&mut panel, &scene, &face, &layout, now, &timing);
+        let bounds = render::render_panel(&mut panel, &scene, &face, &layout, now, &timing);
         canvas.clear();
-        canvas.blit(&panel, anchor_x, anchor_y);
+        if let Some(boxed) = bounds {
+            // Bottom-centre: the painted box is only as wide as its content, so the row slides as
+            // caps come and go. Corner presets are a phase 4 setting.
+            let anchor_x = (canvas.w as i32 - boxed.w as i32) / 2;
+            canvas.blit_region(&panel, anchor_x, anchor_y, boxed);
+        }
         render::draw_ripples(&mut canvas, &scene, &layout, now, &timing);
         if let Err(err) = window.present(&canvas) {
             eprintln!("overlay: present failed: {err}");

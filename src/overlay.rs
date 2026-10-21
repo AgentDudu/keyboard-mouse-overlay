@@ -132,22 +132,28 @@ impl Frame {
     }
 
     /// Copy `src` on top of this frame at `x`/`y`, clipped. Plain copy of already premultiplied
-    /// pixels: the caller clears first, so there is nothing underneath to blend with.
-    pub fn blit(&mut self, src: &Frame, x: i32, y: i32) {
-        for row in 0..src.h as i32 {
-            let target = y + row;
-            if target < 0 || target >= self.h as i32 {
+    /// Copy `region` of `src` so its top-left lands at (`x`, `y`), clipped on both sides. Plain
+    /// copy of already-premultiplied pixels: the caller clears first, so there is nothing
+    /// underneath to blend with. Lets a wide canvas carry only the part with content, which is
+    /// how the strip gets centred on screen.
+    pub fn blit_region(&mut self, src: &Frame, x: i32, y: i32, region: Rect) {
+        let right = (region.x + region.w).min(src.w);
+        let bottom = (region.y + region.h).min(src.h);
+        for row in region.y..bottom {
+            let target_y = y + (row - region.y) as i32;
+            if target_y < 0 || target_y >= self.h as i32 {
                 continue;
             }
-            let first = (x.max(0)) as usize;
-            let last = (x + src.w as i32).min(self.w as i32) as usize;
-            if first >= last {
+            let dest_of_left = x;
+            let dest_left = dest_of_left.max(0);
+            let dest_right = (x + (right - region.x) as i32).min(self.w as i32);
+            if dest_left >= dest_right {
                 continue;
             }
-            let skip = (first as i32 - x) as usize * 4;
-            let from = (row as usize * src.w as usize) * 4 + skip;
-            let bytes = (last - first) * 4;
-            let to = (target as usize * self.w as usize + first) * 4;
+            let src_x = region.x + (dest_left - dest_of_left) as u32;
+            let from = (row as usize * src.w as usize + src_x as usize) * 4;
+            let bytes = (dest_right - dest_left) as usize * 4;
+            let to = (target_y as usize * self.w as usize + dest_left as usize) * 4;
             self.px[to..to + bytes].copy_from_slice(&src.px[from..from + bytes]);
         }
     }
@@ -438,7 +444,17 @@ mod tests {
                 a: 255,
             },
         );
-        frame.blit(&patch, 4, 2);
+        frame.blit_region(
+            &patch,
+            4,
+            2,
+            Rect {
+                x: 0,
+                y: 0,
+                w: patch.w,
+                h: patch.h,
+            },
+        );
         assert_eq!(
             pixel(&frame, 5, 3),
             [0, 255, 0, 255],
@@ -449,13 +465,33 @@ mod tests {
             [0, 0, 0, 0],
             "left of the patch untouched"
         );
-        frame.blit(&patch, -1, -1);
+        frame.blit_region(
+            &patch,
+            -1,
+            -1,
+            Rect {
+                x: 0,
+                y: 0,
+                w: patch.w,
+                h: patch.h,
+            },
+        );
         assert_eq!(
             pixel(&frame, 1, 1),
             [0, 255, 0, 255],
             "negative origin clips"
         );
-        frame.blit(&patch, 100, 100);
+        frame.blit_region(
+            &patch,
+            100,
+            100,
+            Rect {
+                x: 0,
+                y: 0,
+                w: patch.w,
+                h: patch.h,
+            },
+        );
         assert_eq!(
             pixel(&frame, 5, 3),
             [0, 255, 0, 255],
@@ -675,6 +711,98 @@ mod tests {
         assert_eq!(pixel(&frame, 3, 1), [0, 0, 0, 0]);
         frame.clear();
         assert_eq!(pixel(&frame, 1, 1), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn blit_region_copies_only_the_requested_part() {
+        let mut src = Frame::new(6, 2);
+        src.fill_rect(
+            Rect {
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 2,
+            },
+            Rgba {
+                r: 0,
+                g: 0,
+                b: 255,
+                a: 255,
+            },
+        );
+        src.fill_rect(
+            Rect {
+                x: 2,
+                y: 0,
+                w: 3,
+                h: 2,
+            },
+            Rgba {
+                r: 9,
+                g: 8,
+                b: 7,
+                a: 255,
+            },
+        );
+        let mut dst = Frame::new(10, 3);
+        dst.blit_region(
+            &src,
+            5,
+            1,
+            Rect {
+                x: 2,
+                y: 0,
+                w: 3,
+                h: 2,
+            },
+        );
+        assert_eq!(
+            pixel(&dst, 5, 1),
+            [7, 8, 9, 255],
+            "region starts at the requested column"
+        );
+        assert_eq!(pixel(&dst, 7, 1), [7, 8, 9, 255]);
+        assert_eq!(pixel(&dst, 8, 1), [0, 0, 0, 0], "and stops with the region");
+        assert_eq!(
+            pixel(&dst, 0, 1),
+            [0, 0, 0, 0],
+            "rest of the canvas untouched"
+        );
+        let mut clip = Frame::new(4, 3);
+        clip.blit_region(
+            &src,
+            -2,
+            0,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 2,
+            },
+        );
+        assert_eq!(
+            pixel(&clip, 0, 0),
+            [7, 8, 9, 255],
+            "clipped on the left keeps the tail"
+        );
+        assert_eq!(pixel(&clip, 3, 0), [255, 0, 0, 255], "BGRA, blue");
+        let mut off = Frame::new(4, 4);
+        off.blit_region(
+            &src,
+            -6,
+            0,
+            Rect {
+                x: 0,
+                y: 0,
+                w: 6,
+                h: 2,
+            },
+        );
+        assert_eq!(
+            pixel(&off, 0, 0),
+            [0, 0, 0, 0],
+            "fully off-canvas copy paints nothing"
+        );
     }
 
     #[test]

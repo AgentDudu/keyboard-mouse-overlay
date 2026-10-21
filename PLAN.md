@@ -172,6 +172,16 @@ screenshot diff vs no-overlay shot -> panel x 0..932 y 938..1024, caps at x 14-1
                                        -> docs/phase3-panel.png
 ```
 
+Layout anchor is bottom-centre: the strip is only as wide as its content and is blitted centred
+per frame, so the row slides sideways as caps come and go (keyviz behaviour; corner presets are a
+phase 4 setting). Labels are centred by measured ink, not font ascent — `Face::ink` reads outline
+bounds and `baseline_for` centres that box in the keycap.
+
+```
+caps x 507..1411 of 1920   -> left margin 507, right margin 508 (centred)
+glyph ink rows 973..987    -> centre 980 vs cap box centre 981
+```
+
 Still open for phase 3: recorded GIF, 150 % DPI screenshot, themes beyond the one built-in
 palette, and the optional hold-to-confirm ring.
 

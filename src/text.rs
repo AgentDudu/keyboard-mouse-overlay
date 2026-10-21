@@ -23,9 +23,34 @@ impl<'font> Face<'font> {
         Ok(Self { font, units_per_em })
     }
 
-    /// Distance from baseline to cap top, used to centre text vertically in a keycap.
-    pub fn ascent(&self, pixel: f32) -> f32 {
-        self.font.ascent_unscaled() * pixel / self.units_per_em
+    /// Ink extents of `text` relative to its baseline, as (above, below), both positive.
+    ///
+    /// Outline bounds only, no rasterising, so a layout pass can ask before drawing.
+    pub fn ink(&self, pixel: f32, text: &str) -> (f32, f32) {
+        let mut pen = 0.0f32;
+        let (mut top, mut bottom) = (0.0f32, 0.0f32);
+        for ch in text.chars() {
+            let id = self.font.glyph_id(ch);
+            if let Some(outline) = self
+                .font
+                .outline_glyph(id.with_scale_and_position(pixel, point(pen, 0.0)))
+            {
+                let bounds = outline.px_bounds();
+                top = top.min(bounds.min.y);
+                bottom = bottom.max(bounds.max.y);
+            }
+            pen += self.font.h_advance_unscaled(id) * pixel / self.units_per_em;
+        }
+        (-top, bottom)
+    }
+
+    /// Baseline that centres the ink of `text` inside `height` starting at `top`.
+    ///
+    /// Measuring the label rather than trusting font ascent is what makes capitals, digits and
+    /// lowercase look centred: font metrics carry ascender space the overlay never draws.
+    pub fn baseline_for(&self, pixel: f32, top: u32, height: u32, text: &str) -> i32 {
+        let (above, below) = self.ink(pixel, text);
+        (top as f32 + height as f32 / 2.0 + (above - below) / 2.0) as i32
     }
 
     /// Advance width of `text` at `pixel` size. Kerning is skipped: the bundled face is mono.
@@ -113,10 +138,10 @@ mod tests {
     #[test]
     fn font_loads_and_has_usable_metrics() {
         let face = face();
+        let (above, below) = face.ink(32.0, "H");
         assert!(
-            (face.ascent(32.0) - 24.0).abs() < 12.0,
-            "ascent sanity: {}",
-            face.ascent(32.0)
+            above > 12.0 && below < 4.0,
+            "cap sits above the baseline: {above} {below}"
         );
         let wide = face.width("WWWW", 32.0);
         let narrow = face.width("W", 32.0);
@@ -139,6 +164,56 @@ mod tests {
         assert!(inked(&frame) > 50, "glyph produced no coverage");
         assert!(right > 4 && right < 60, "right edge {right}");
         assert!(face.width("A", 32.0) > 0.0);
+    }
+
+    /// Rows that contain glyph ink of `colour`, used to measure where text actually landed.
+    fn ink_rows(frame: &Frame) -> (u32, u32) {
+        let rows = frame
+            .px
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(_, px)| px[3] > 40)
+            .map(|(i, _)| (i / frame.w as usize) as u32);
+        let mut rows = rows.peekable();
+        let first = rows.next().expect("ink expected");
+        let mut last = first;
+        for row in rows {
+            last = row;
+        }
+        (first, last)
+    }
+
+    #[test]
+    fn baseline_for_centres_the_ink_of_the_label() {
+        let face = Face::new(FONT_BYTES).expect("embedded font");
+        for label in ["H", "Ctrl", "1", "PgUp"] {
+            let pixel = 30.0;
+            let (top, height) = (10u32, 58u32);
+            let mut frame = Frame::new(220, 90);
+            let baseline = face.baseline_for(pixel, top, height, label);
+            face.draw(
+                &mut frame,
+                4,
+                baseline,
+                pixel,
+                label,
+                Rgba {
+                    r: 255,
+                    g: 255,
+                    b: 255,
+                    a: 255,
+                },
+            );
+            let (first, last) = ink_rows(&frame);
+            let above = first as i32 - top as i32;
+            let below = (top + height) as i32 - last as i32 - 1;
+            assert!(
+                (above - below).abs() <= 2,
+                "{label}: {above} above vs {below} below (baseline {baseline})"
+            );
+        }
     }
 
     #[test]

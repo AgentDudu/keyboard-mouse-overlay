@@ -168,9 +168,8 @@ pub fn render_panel(
     frame.fill_round_rect(panel, layout.radius * 2, PANEL);
 
     let cap_top = layout.pad + (layout.row_height() - layout.cap_height) / 2;
-    let baseline =
-        (cap_top as f32 + (layout.cap_height as f32 + face.ascent(layout.font_px)) / 2.0) as i32;
     for slot in &slots {
+        let baseline = face.baseline_for(layout.font_px, cap_top, layout.cap_height, slot.label);
         let box_colour = slot.alpha.map_or(CAP_IDLE, |alpha| dim(CAP_LIT, alpha));
         frame.fill_round_rect(
             Rect {
